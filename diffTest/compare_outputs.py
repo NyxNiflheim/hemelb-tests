@@ -5,7 +5,7 @@ import os
 import argparse
 import numpy as np
 import h5py
-
+# Path to HemeLB Python tools
 hemelb_python_tools_path = '/work/m24oc/m24oc/s2450341/hemelb/python-tools'
 if hemelb_python_tools_path not in sys.path:
     sys.path.append(hemelb_python_tools_path)
