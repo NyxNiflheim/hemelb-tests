@@ -128,7 +128,7 @@ if __name__ == "__main__":
             print(f"  !!! MISMATCH FOUND in field '{field_name}'")
             total_mismatched_fields += 1
         else:
-            print("  OK.")
+            print(f"  No MISMATCH in field '{field_name}'.")
 
     if total_mismatched_fields == 0:
         print("\nValidation Successful! All specified fields match numerically.")
