@@ -1,15 +1,15 @@
 # file: compare_outputs.py
+# compare mask of inf and nan values, then compare numerical values
 
 import sys
 import os
 import argparse
 import numpy as np
 import h5py
-# Path to HemeLB Python tools
+
 hemelb_python_tools_path = '/work/m24oc/m24oc/s2450341/hemelb/python-tools'
 if hemelb_python_tools_path not in sys.path:
     sys.path.append(hemelb_python_tools_path)
-
 try:
     from hlb.parsers.extraction import ExtractedProperty
 except ImportError:
@@ -19,31 +19,25 @@ except ImportError:
 
 
 def load_and_sort_xtr_data(xtr_path, timestep):
-    """load xtr file, and return sorted data dictionary."""
+    # load and sort XTR data
     print(f"Loading and sorting XTR data from: {xtr_path} for timestep {timestep}")
     loader = ExtractedProperty(xtr_path)
     if timestep not in loader.times:
         raise ValueError(f"Timestep {timestep} not found in XTR file. Available: {loader.times}")
     snapshot = loader.GetByTimeStep(timestep)
-    
     coord_field_name = 'grid' if 'grid' in snapshot.dtype.names else 'position'
-    if coord_field_name not in snapshot.dtype.names:
-        raise ValueError(f"Could not find coordinate field ('grid' or 'position') in XTR data.")
-    
     coords = snapshot[coord_field_name]
     order = np.lexsort((coords[:, 2], coords[:, 1], coords[:, 0]))
-    
     sorted_data = {}
     for field in snapshot.dtype.names:
-        if field == 'id' or field == 'position': # ignore 'id' and 'position' fields
+        if field == 'id' or field == 'position':
             continue
         sorted_data[field] = snapshot[field][order]
-    
     print(f"XTR data loaded and sorted.")
     return sorted_data
 
 def load_and_sort_hdf5_data(h5_path, timestep):
-    """load HDF5 file, and return sorted data dictionary."""
+    # load and sort HDF5 data
     print(f"Loading and sorting HDF5 data from: {h5_path} for timestep {timestep}")
     sorted_data = {}
     with h5py.File(h5_path, 'r') as f:
@@ -55,7 +49,6 @@ def load_and_sort_hdf5_data(h5_path, timestep):
         coords = group['geometry'][:]
         order = np.lexsort((coords[:, 2], coords[:, 1], coords[:, 0]))
         
-        # rename 'geometry' to 'grid' for consistency
         sorted_data['grid'] = coords[order]
 
         for name in group.keys():
@@ -81,7 +74,6 @@ if __name__ == "__main__":
     print("\n--- Starting Numerical Comparison ---")
     
     fields_to_compare = ['grid', 'pressure', 'shearstress', 'developed_velocity_field']
-    results_summary = []
     total_mismatched_fields = 0
 
     for field_name in fields_to_compare:
@@ -95,57 +87,55 @@ if __name__ == "__main__":
         data_xtr = xtr_data[field_name]
         data_h5 = h5_data[field_name]
         
-        num_elements = data_xtr.size
-        num_mismatches = 0
+        is_mismatch = False
         
         if field_name == 'grid':
-            # grid field is always integer coordinates
             data_xtr_int = data_xtr.astype(np.int64)
             data_h5_int = data_h5.astype(np.int64)
-            comparison_array = np.equal(data_xtr_int, data_h5_int)
+            if not np.array_equal(data_xtr_int, data_h5_int):
+                is_mismatch = True
         else:
-            # use tolerance for float fields
-            # flatten the arrays to compare all elements
             data_xtr_flat = data_xtr.flatten()
             data_h5_flat = data_h5.flatten()
             
-            # XDR files may contain Inf values, handle them appropriately
-            if field_name == 'shearstress':
-                data_xtr_flat = np.nan_to_num(data_xtr_flat, nan=-1.0, posinf=-1.0, neginf=-1.0)
+            # create masks for NaN and Inf values
+            mask_xtr_nan = np.isnan(data_xtr_flat)
+            mask_h5_nan = np.isnan(data_h5_flat)
+            mask_xtr_inf = np.isinf(data_xtr_flat)
+            mask_h5_inf = np.isinf(data_h5_flat)
             
-            comparison_array = np.isclose(data_xtr_flat, data_h5_flat, rtol=args.tolerance, equal_nan=True)
+            # compare NaN and Inf mask
+            nan_pattern_ok = np.array_equal(mask_xtr_nan, mask_h5_nan)
+            inf_pattern_ok = np.array_equal(mask_xtr_inf, mask_h5_inf)
+            
+            print(f"  NaN pattern matches: {nan_pattern_ok}")
+            print(f"  Inf pattern matches: {inf_pattern_ok}")
+            
+            # compare numerical values of finite numbers
+            # create a mask for valid (finite) numbers
+            valid_mask = ~ (mask_xtr_nan | mask_h5_nan | mask_xtr_inf | mask_h5_inf)
+            
+            clean_xtr = data_xtr_flat[valid_mask]
+            clean_h5 = data_h5_flat[valid_mask]
+            
+            numerical_ok = np.allclose(clean_xtr, clean_h5, rtol=args.tolerance, equal_nan=False)
+            print(f"  Numerical values of finite numbers match: {numerical_ok}")
+            
+            if not (nan_pattern_ok and inf_pattern_ok and numerical_ok):
+                is_mismatch = True
 
-        num_mismatches = np.sum(~comparison_array)
-        
-        if num_mismatches > 0:
+        if is_mismatch:
+            print(f"  !!! MISMATCH FOUND in field '{field_name}'")
             total_mismatched_fields += 1
-            print(f"  !!! MISMATCH FOUND: {num_mismatches} elements differ.")
-            
-            # get all indices of mismatches
-            mismatch_indices = np.where(~comparison_array)
-            unique_mismatched_rows = np.unique(mismatch_indices[0])
-            
-            print(f"  --- Showing values for first 19 mismatched sites: ---")
-            for i, row_idx in enumerate(unique_mismatched_rows[:19]):
-                print(f"    Site Index {row_idx}: XDR = {data_xtr[row_idx]}, HDF5 = {data_h5[row_idx]}")
         else:
             print("  OK.")
-        
-        results_summary.append({
-            "field": field_name,
-            "total_compared": num_elements,
-            "mismatches": num_mismatches
-        })
-    
-    # print summary of results
-    print("\n\n--- Comparison Summary ---")
-    print(f"{'Field Name':<30} | {'Mismatched Elements':<20} | {'Total Elements Compared':<25}")
-    print("-" * 80)
-    for res in results_summary:
-        print(f"{res['field']:<30} | {res['mismatches']:<20} | {res['total_compared']:<25}")
-    
-    print("-" * 80)
+
     if total_mismatched_fields == 0:
         print("\nValidation Successful! All specified fields match numerically.")
     else:
         print(f"\nValidation Finished. Found mismatches in {total_mismatched_fields} fields.")
+
+    print(f"  {np.sum(mask_xtr_nan)} NaNs in XTR, {np.sum(mask_h5_nan)} in HDF5")
+    print(f"  {np.sum(mask_xtr_inf)} Infs in XTR, {np.sum(mask_h5_inf)} in HDF5")
+    print(f"  Compared {np.sum(valid_mask)} finite elements")
+    print(f"  Max abs diff = {np.max(np.abs(clean_xtr - clean_h5))}")
